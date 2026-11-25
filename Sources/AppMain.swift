@@ -85,19 +85,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         _ = SystemMonitorManager.shared
         _ = ScreenshotManager.shared
         _ = MenuBarHiderManager.shared
-        _ = ActivationManager.shared
-
-        // Tự động mở bảng kích hoạt nếu đây là lần đầu người dùng khởi động ứng dụng
-        if !ActivationManager.shared.isActivated {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
-                guard let self = self, let button = self.statusItem?.button else { return }
-                if !self.popover.isShown {
-                    self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-                    self.popover.contentViewController?.view.window?.makeKey()
-                    NSApp.activate(ignoringOtherApps: true)
-                }
-            }
-        }
 
         // Register for display reconfiguration
         CGDisplayRegisterReconfigurationCallback(displayReconfigCallback, nil)
@@ -156,14 +143,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         if ProcessInfo.processInfo.environment["HYPERMAC_PREVIEW_EXPAND_PERMS"] == "1" {
             PermissionsManager.shared.isExpanded = true
-        }
-
-        if ProcessInfo.processInfo.environment["HYPERMAC_PREVIEW_DONATE"] == "1" {
-            UpdateManager.shared.showDonateModal = true
-        }
-
-        if ProcessInfo.processInfo.environment["HYPERMAC_PREVIEW_ACTIVATION"] == "1" {
-            ActivationManager.shared.isActivated = false
         }
 
         if ProcessInfo.processInfo.environment["HYPERMAC_PREVIEW_THERMAL"] == "1" {

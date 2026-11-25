@@ -19,7 +19,7 @@ enum AccessibilityRecovery {
         if AXIsProcessTrusted() { return }
 
         let defaults = UserDefaults.standard
-        let version = UpdateManager.currentVersion
+        let version = AppVersion.current
         guard defaults.string(forKey: lastResetVersionKey) != version else { return }
 
         resetAccessibilityPermission()
