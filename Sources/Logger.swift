@@ -16,14 +16,22 @@ private enum LogSink {
         return f
     }()
 
+    /// `/tmp` dùng chung cho mọi user: mở bằng `O_NOFOLLOW` (không đi theo symlink do user khác cài sẵn)
+    /// và kiểm tra bằng `fstat` rằng đây là file thường thuộc user hiện tại; nếu không thì bỏ ghi log.
     static func openIfNeeded() {
         guard handle == nil else { return }
-        let fm = FileManager.default
-        if !fm.fileExists(atPath: path) {
-            fm.createFile(atPath: path, contents: nil)
+        let fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return }
+        var st = stat()
+        guard fstat(fd, &st) == 0,
+              (st.st_mode & S_IFMT) == S_IFREG,
+              st.st_uid == getuid(),
+              st.st_nlink == 1 else {
+            close(fd)
+            return
         }
-        handle = FileHandle(forWritingAtPath: path)
-        size = (try? handle?.seekToEnd()) ?? 0
+        handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        size = UInt64(max(0, st.st_size))
     }
 
     static func rotate() {
