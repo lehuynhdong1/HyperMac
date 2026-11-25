@@ -249,11 +249,13 @@ public class BatteryManager: ObservableObject {
         return max(0, diff)
     }
 
-    public var tempAlertThreshold: Double = 38.0 // Warning at 38°C
+    public var tempAlertThreshold: Double = 40.0 // Cảnh báo quá nhiệt pin ở 40°C
     private var lastTempAlertDate: Date? = nil
     private var lastExtDisplayAlertDate: Date? = nil
     private var lastLowBatteryAlertLevel: Int? = nil
     private var hasAlertedBypassThisSession: Bool = false
+    /// Đang trong phiên sạc bù lên `chargeLimit` (bắt đầu khi pin <= limit-3, kết thúc khi chạm limit / rút sạc).
+    private var isRechargingToLimit: Bool = false
 
     private var timer: Timer?
     private var timerInterval: TimeInterval = 0
@@ -589,12 +591,17 @@ public class BatteryManager: ObservableObject {
             setIfChanged(&self.isBypassActive, false)
         }
 
-        if let rawTemp = dict["Temperature"] as? Double {
-            let t = rawTemp / 100.0
-            if abs(self.temperature - t) >= 0.05 { self.temperature = t }
-        } else if let rawTempInt = dict["Temperature"] as? Int {
-            let t = Double(rawTempInt) / 100.0
-            if abs(self.temperature - t) >= 0.05 { self.temperature = t }
+        // macOS 26+/27: `Temperature` không còn ở cấp ngoài, chỉ nằm trong `BatteryData`.
+        // Thứ tự: cấp ngoài → BatteryData.Temperature → BatteryData.VirtualTemperature → SMC TB0T.
+        let batteryData = dict["BatteryData"] as? [String: Any]
+        let rawTemp = (dict["Temperature"] as? NSNumber)
+            ?? (batteryData?["Temperature"] as? NSNumber)
+            ?? (batteryData?["VirtualTemperature"] as? NSNumber)
+            ?? (dict["VirtualTemperature"] as? NSNumber)
+            ?? batteryPackTemperatureRaw()
+        let decodedTemp = rawTemp.flatMap { decodeBatteryTemperature($0.doubleValue) } ?? smcBatteryTemperature()
+        if let t = decodedTemp, abs(self.temperature - t) >= 0.05 {
+            self.temperature = t
         }
 
         if let rawVolt = dict["Voltage"] as? Double {
@@ -716,6 +723,72 @@ public class BatteryManager: ObservableObject {
         }
     }
 
+    // MARK: - Battery Temperature Decoding
+
+    private enum BatteryTempScale { case centiCelsius, deciKelvin }
+    private var batteryTempScale: BatteryTempScale?
+
+    /// `AppleSmartBattery.Temperature` không thống nhất đơn vị giữa các gas-gauge/firmware:
+    /// đa số là 0.01 °C (3469 = 34.69 °C) nhưng một số pin báo theo chuẩn Smart Battery 0.1 K
+    /// (3131 = 40.0 °C). Hai dải này chồng nhau ở ~2530–3580 nên không đoán được chỉ bằng giá trị;
+    /// đối chiếu với cảm biến pin SMC `TB0T`/`TB1T` (°C thật) một lần rồi ghi nhớ đơn vị.
+    private func decodeBatteryTemperature(_ raw: Double) -> Double? {
+        guard raw > 0 else { return nil }
+        let centi = raw / 100.0
+        let deciK = raw / 10.0 - 273.15
+        let plausible: (Double) -> Bool = { $0 > -20 && $0 < 90 }
+
+        if batteryTempScale == nil {
+            if let ref = smcBatteryTemperature() {
+                batteryTempScale = abs(centi - ref) <= abs(deciK - ref) ? .centiCelsius : .deciKelvin
+                appLog("🌡️ Pin: Temperature=\(Int(raw)) ↔ SMC \(String(format: "%.1f", ref))°C → đơn vị \(batteryTempScale == .deciKelvin ? "0.1 K" : "0.01 °C")")
+            } else if !plausible(centi) && plausible(deciK) {
+                batteryTempScale = .deciKelvin
+            } else if plausible(centi) && !plausible(deciK) {
+                batteryTempScale = .centiCelsius
+            }
+        }
+
+        switch batteryTempScale {
+        case .deciKelvin: return plausible(deciK) ? deciK : nil
+        case .centiCelsius: return plausible(centi) ? centi : nil
+        case nil: return plausible(centi) ? centi : (plausible(deciK) ? deciK : nil)
+        }
+    }
+
+    /// macOS 27 (M2 Pro trở lên): nhiệt độ nằm ở node con `AppleSmartBatteryPack` → `BatteryData.Temperature`.
+    private func batteryPackTemperatureRaw() -> NSNumber? {
+        let pack = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBatteryPack"))
+        guard pack != 0 else { return nil }
+        defer { IOObjectRelease(pack) }
+        if let t = IORegistryEntryCreateCFProperty(pack, "Temperature" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? NSNumber {
+            return t
+        }
+        guard let data = IORegistryEntryCreateCFProperty(pack, "BatteryData" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? NSDictionary else { return nil }
+        return (data["Temperature"] as? NSNumber) ?? (data["VirtualTemperature"] as? NSNumber)
+    }
+
+    /// Nhiệt độ pin thật từ SMC (°C), hỗ trợ kiểu `flt ` (Apple Silicon) và `sp78` (Intel).
+    private func smcBatteryTemperature() -> Double? {
+        let candidates = ["TB0T", "TB1T", "TB2T"].compactMap { key -> Double? in
+            guard let (type, b) = smcClient.readKey(key) else { return nil }
+            let v: Double
+            switch type {
+            case "flt " where b.count >= 4:
+                v = Double(Float(bitPattern: UInt32(b[0]) | UInt32(b[1]) << 8 | UInt32(b[2]) << 16 | UInt32(b[3]) << 24))
+            case "sp78" where b.count >= 2:
+                v = Double(Int16(bitPattern: UInt16(b[0]) << 8 | UInt16(b[1]))) / 256.0
+            default:
+                return nil
+            }
+            return (v > 0 && v < 90) ? v : nil
+        }
+        guard !candidates.isEmpty else { return nil }
+        return candidates.reduce(0, +) / Double(candidates.count)
+    }
+
     // MARK: - Temperature Safety Alerts
 
     private func checkTemperatureAlert() {
@@ -737,7 +810,7 @@ public class BatteryManager: ObservableObject {
     private func sendNotification(title: String, body: String) {
         let escapedTitle = title.replacingOccurrences(of: "\"", with: "\\\"")
         let escapedBody = body.replacingOccurrences(of: "\"", with: "\\\"")
-        let script = "display notification \"\(escapedBody)\" with title \"\(escapedTitle)\" sound name \"Submarine\""
+        let script = "display notification \"\(escapedBody)\" with title \"\(escapedTitle)\""
         DispatchQueue.global(qos: .utility).async {
             _ = shell("osascript -e '\(script)'")
         }
@@ -745,6 +818,13 @@ public class BatteryManager: ObservableObject {
 
     /// Đọc trạng thái khóa sạc SMC trực tiếp in-process qua IOKit AppleSMC (`0ms`, 0 tiến trình con, 0 sudo).
     /// Trả `nil` nếu thiết bị không có khóa SMC nào (khi đó fallback sang PowerUI MCL).
+    ///
+    /// Phân biệt 2 loại khóa:
+    /// - **Công tắc ngắt tức thì** (`CHTE = 1`, `CH0B = 2`): pin chắc chắn đang bị ngắt sạc (Bypass).
+    /// - **Trần sạc firmware** (`bfF0 = 1|2` trên M3/M4/M5, `BCLM < 100` trên Intel): chỉ là *ngưỡng*;
+    ///   firmware vẫn cho sạc cho tới khi đạt trần. Trước đây trần này bị coi là "đang Bypass" ngay cả khi
+    ///   pin mới 78% → nhánh trễ 78–79% tưởng đã khóa và đóng sạc sớm. Giờ trần chỉ tính là Bypass khi
+    ///   mức pin đã chạm trần.
     private func readHardwareBypassInProcess() -> Bool? {
         var foundKey = false
         var bypassed = false
@@ -759,14 +839,28 @@ public class BatteryManager: ObservableObject {
         }
         if let bff0 = smcClient.readKeyBytes("bfF0"), !bff0.isEmpty {
             foundKey = true
-            if bff0[0] == 1 || bff0[0] == 2 { bypassed = true }
+            var ceiling = chargeLimit
+            if let bfd0 = smcClient.readKeyBytes("bfD0"), !bfd0.isEmpty, bfd0[0] > 0, bfd0[0] <= 100 {
+                ceiling = Int(bfd0[0])
+            }
+            if (bff0[0] == 1 || bff0[0] == 2) && firmwareCeilingHolding(ceiling) { bypassed = true }
         }
         if let bclm = smcClient.readKeyBytes("BCLM"), !bclm.isEmpty {
             foundKey = true
-            if bclm[0] > 0 && bclm[0] < 100 { bypassed = true }
+            if bclm[0] > 0 && bclm[0] < 100 && firmwareCeilingHolding(Int(bclm[0])) { bypassed = true }
         }
 
         return foundKey ? bypassed : nil
+    }
+
+    /// Trần firmware (`bfF0`/`BCLM`) được coi là đang giữ pin (Bypass) khi pin đã chạm trần, hoặc khi pin
+    /// đang nằm trong dải trễ ngay dưới trần (limit-3 … limit-1) mà không có dòng sạc và không ở phiên sạc bù.
+    /// Trong phiên sạc bù (bắt đầu từ <= limit-3) thì không bao giờ tính là Bypass trước khi đạt trần.
+    private func firmwareCeilingHolding(_ ceiling: Int) -> Bool {
+        if currentLevel >= ceiling { return true }
+        let inHysteresisBand = currentLevel > max(10, ceiling - 3)
+        let chargingNow = isCharging || amperage > 120
+        return inHysteresisBand && !isRechargingToLimit && !chargingNow
     }
 
     public func checkSMCBypassStatus() {
@@ -870,6 +964,7 @@ public class BatteryManager: ObservableObject {
         // 2. Normal power state
         if !isPluggedIn {
             setIfChanged(&self.isBypassActive, false)
+            isRechargingToLimit = false
             // Keep firmware ceiling armed even while on battery if protection is enabled,
             // so plugging in while asleep won't overshoot the limit
             if isProtectionEnabled && !isTopUpActive && NativePowerUIClient.shared.isSupported && chargeLimit >= 80 {
@@ -895,16 +990,23 @@ public class BatteryManager: ObservableObject {
 
         if isProtectionEnabled {
             if currentLevel >= chargeLimit {
+                isRechargingToLimit = false
                 // Chỉ gọi sudo ghi lại SMC khi khóa phần cứng chưa active hoặc đang có dòng sạc vào pin
                 let needsUrgentLock = !isBypassActive || isCharging || amperage > 120
                 setChargingInhibited(true, forceImmediate: needsUrgentLock)
                 setIfChanged(&statusMessage, tr("Nguồn AC trực tiếp (Đã khóa \(chargeLimit)% chống chai pin)", "Direct AC Power (Locked at \(chargeLimit)% to protect battery)"))
             } else if currentLevel <= max(10, chargeLimit - 3) {
+                isRechargingToLimit = true
                 setChargingInhibited(false)
                 setIfChanged(&statusMessage, tr("Đang sạc bù lên \(chargeLimit)% (\(currentLevel)%)", "Recharging up to \(chargeLimit)% (\(currentLevel)%)"))
             } else {
                 // Hysteresis band (e.g. 78% - 79% when limit is 80%)
-                if isBypassActive {
+                // Đang trong phiên sạc bù (bắt đầu từ <= limit-3) hoặc pin đang thực sự nhận dòng sạc →
+                // nạp thẳng lên đúng `chargeLimit` rồi mới đóng khóa Bypass (không dừng non ở 78%).
+                // Chỉ giữ khóa ở dải này khi khóa đã đóng sẵn và pin không sạc (chống sạc nhồi).
+                let chargingUp = isRechargingToLimit || isCharging || amperage > 120
+                let lockedAtLimit = isBypassActive || lastAppliedInhibitState == true
+                if lockedAtLimit && !chargingUp {
                     setChargingInhibited(true)
                     setIfChanged(&statusMessage, tr("Nguồn AC trực tiếp (\(currentLevel)%)", "Direct AC Power (\(currentLevel)%)"))
                 } else {

@@ -25,6 +25,7 @@ private func displayReconfigCallback(
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
+    private var lastMenuBarTitle: String?
     var mainMenuBarButton: NSStatusBarButton? { statusItem?.button }
     private var popover: NSPopover!
     private var previewWindow: NSWindow?
@@ -75,6 +76,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         KeyInterceptor.shared.start()
 
         // Eagerly initialize Managers
+        _ = BatteryManager.shared
         _ = ClipboardManager.shared
         _ = FinderCutPasteManager.shared
         _ = SystemCleanerManager.shared
@@ -222,13 +224,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let statsText = SystemMonitorManager.shared.formattedMenuBarSummary() {
             parts.append(statsText)
         }
-        if parts.isEmpty {
-            button.title = ""
-            button.imagePosition = .imageOnly
-        } else {
-            button.title = " " + parts.joined(separator: " · ")
-            button.imagePosition = .imageLeading
-        }
+        let newTitle = parts.isEmpty ? "" : " " + parts.joined(separator: " · ")
+        // Bỏ qua khi chuỗi không đổi: tránh vẽ lại/đo lại status item mỗi nhịp lấy mẫu.
+        guard newTitle != lastMenuBarTitle else { return }
+        lastMenuBarTitle = newTitle
+        // button.font là monospacedDigit → mọi chữ số (và U+2007) cùng độ rộng, thanh không rung khi số đổi.
+        button.title = newTitle
+        button.imagePosition = newTitle.isEmpty ? .imageOnly : .imageLeading
     }
 
     @objc func togglePopover() {

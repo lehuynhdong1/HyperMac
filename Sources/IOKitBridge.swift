@@ -127,6 +127,20 @@ public final class AppleSMCClient: @unchecked Sendable {
         return kr == KERN_SUCCESS && out[40] == 0 ? out : nil
     }
 
+    /// Đọc khóa SMC kèm kiểu dữ liệu (ví dụ `"flt "`, `"sp78"`, `"ui8 "`).
+    public func readKey(_ keyName: String) -> (type: String, bytes: [UInt8])? {
+        lock.lock()
+        defer { lock.unlock() }
+        let code = Self.fourCC(keyName)
+        guard let info = call(cmd: 9, key: code) else { return nil }
+        let sz = Int(Self.u32(info, 28))
+        let typeCode = Self.u32(info, 32)
+        let typeBytes = [24, 16, 8, 0].map { UInt8((typeCode >> UInt32($0)) & 0xFF) }
+        let type = String(bytes: typeBytes, encoding: .ascii) ?? ""
+        guard sz > 0 && sz <= 32, let val = call(cmd: 5, key: code, size: UInt32(sz)) else { return nil }
+        return (type, Array(val[48..<(48 + sz)]))
+    }
+
     /// Đọc mảng byte thô của khóa SMC (trả `nil` nếu khóa không tồn tại trên dòng máy này).
     public func readKeyBytes(_ keyName: String) -> [UInt8]? {
         lock.lock()

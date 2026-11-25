@@ -176,6 +176,7 @@ public final class FanManager: ObservableObject {
     }
 
     private func apply(rpm: Double, as newMode: Mode) {
+        appLog("🌀 Fan apply \(newMode) rpm=\(Int(rpm)) available=\(isAvailable) helper=\(isHelperReady) safety=\(safetyTripped) fans=\(fanCount) ranges=\(fanRanges)")
         guard isAvailable else { return }
         guard !safetyTripped else {
             errorMessage = tr("Máy đang quá nóng, quạt do hệ thống điều khiển.",
@@ -236,6 +237,7 @@ public final class FanManager: ObservableObject {
             let (out, _) = shell("'\(smc)' -k F0Tg -r 2>/dev/null")
             tg = FanManager.parseFloat(out)
         }
+        appLog("🌀 Fan verify F0Tg=\(Int(tg)) expected=\(Int(expected))")
         if abs(tg - expected) > 5 {
             self.mode = .system
             self.targetRPM = 0
@@ -359,6 +361,7 @@ public final class FanManager: ObservableObject {
         let t = ThermalManager.shared
         let hottest = max(t.cpuPeakTemp, t.gpuAvgTemp, t.hotspotTemp)
         if !safetyTripped, hottest >= FanManager.safetyTempOn {
+            appLog("🌀 Fan safety trip: cpuPeak=\(Int(t.cpuPeakTemp)) gpu=\(Int(t.gpuAvgTemp)) hotspot=\(Int(t.hotspotTemp))")
             safetyTripped = true
             if mode != .system {
                 selectSystem()

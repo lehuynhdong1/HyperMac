@@ -2226,7 +2226,7 @@ struct BatteryCardView: View {
             }
 
             // Toggles
-            toggleRow(icon: "thermometer.sun.fill", iconColor: .secondary, title: tr("Thông báo khi pin nóng > 38°C", "Alert when battery temp > 38°C"), isOn: Binding<Bool>(
+            toggleRow(icon: "thermometer.sun.fill", iconColor: .secondary, title: tr("Thông báo khi pin nóng ≥ 40°C", "Alert when battery temp ≥ 40°C"), isOn: Binding<Bool>(
                 get: { batteryManager.isTempAlertEnabled },
                 set: { batteryManager.isTempAlertEnabled = $0 }
             ))

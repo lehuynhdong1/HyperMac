@@ -98,17 +98,22 @@ public final class SystemMonitorManager: ObservableObject {
         }
     }
 
+    /// Phần trăm độ rộng cố định cho Menu Bar: luôn chiếm 2 ô chữ số, số 1 chữ số được đệm bằng
+    /// FIGURE SPACE (U+2007, rộng bằng đúng 1 chữ số trong font monospacedDigit) để thanh không xê dịch
+    /// khi giá trị đổi giữa 9% ↔ 10%.
+    static func fixedWidthPercent(_ value: Double) -> String {
+        let v = min(100, max(0, Int(value.rounded())))
+        return (v < 10 ? "\u{2007}" : "") + "\(v)%"
+    }
+
     /// Chuỗi tóm tắt hiển thị trên Menu Bar theo các tùy chọn đang bật.
     public func formattedMenuBarSummary() -> String? {
         var parts: [String] = []
         if showCPURAMMenuBar {
-            let cpu = Int(cpuUsagePercent.rounded())
-            let ram = Int(ramUsagePercent.rounded())
-            parts.append("CPU \(cpu)% · RAM \(ram)%")
+            parts.append("CPU \(Self.fixedWidthPercent(cpuUsagePercent)) · RAM \(Self.fixedWidthPercent(ramUsagePercent))")
         }
         if showGPUMenuBar && hasGPU {
-            let gpu = Int(gpuUsagePercent.rounded())
-            parts.append("GPU \(gpu)%")
+            parts.append("GPU \(Self.fixedWidthPercent(gpuUsagePercent))")
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }

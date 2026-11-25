@@ -5,6 +5,9 @@ import AppKit
 
 public struct AltTabOverlayView: View {
     @ObservedObject var windowManager: WindowManager
+    /// Hàng đầu tiên đang hiển thị trong khung nhìn của lưới. Chỉ cuộn khi ô được chọn
+    /// nằm ngoài khung nhìn, để hàng đầu giữ cố định khi duyệt các cửa sổ đã thấy sẵn.
+    @State private var topVisibleRow: Int = 0
 
     public init(windowManager: WindowManager) {
         self.windowManager = windowManager
@@ -153,7 +156,6 @@ public struct AltTabOverlayView: View {
                                         windowManager.closeSelectedWindow()
                                     }
                                 )
-                                .id(index)
                             }
 
                             // Keep grid columns flush to the left on ragged last rows
@@ -164,16 +166,51 @@ public struct AltTabOverlayView: View {
                                 }
                             }
                         }
+                        .id(Self.rowScrollID(rowIndex))
                     }
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 4)
             }
-            .onChange(of: windowManager.selectedIndex) {
-                withAnimation(.easeOut(duration: 0.12)) {
-                    proxy.scrollTo(windowManager.selectedIndex, anchor: .center)
-                }
+            .onAppear {
+                topVisibleRow = 0
+                revealSelectedRow(proxy: proxy, columns: colCount, visibleRows: layout.visibleRows, animated: false)
             }
+            .onChange(of: windowManager.selectedIndex) {
+                revealSelectedRow(proxy: proxy, columns: colCount, visibleRows: layout.visibleRows, animated: true)
+            }
+            .onChange(of: layout) {
+                topVisibleRow = 0
+                revealSelectedRow(proxy: proxy, columns: colCount, visibleRows: layout.visibleRows, animated: false)
+            }
+        }
+    }
+
+    private static func rowScrollID(_ row: Int) -> String { "alttab-row-\(row)" }
+
+    /// Cuộn tối thiểu: chỉ khi hàng của ô được chọn nằm ngoài khung nhìn hiện tại.
+    /// Đi xuống quá đáy → hàng đó thành hàng cuối; đi lên quá đỉnh → hàng đó thành hàng đầu.
+    private func revealSelectedRow(proxy: ScrollViewProxy, columns: Int, visibleRows: Int, animated: Bool) {
+        let index = windowManager.selectedIndex
+        guard index >= 0, index < windowManager.windows.count else { return }
+        let row = index / max(1, columns)
+        let visible = max(1, visibleRows)
+        let totalRows = (windowManager.windows.count + max(1, columns) - 1) / max(1, columns)
+        var top = min(topVisibleRow, max(0, totalRows - visible))
+
+        if row < top {
+            top = row
+        } else if row >= top + visible {
+            top = row - visible + 1
+        } else if top == topVisibleRow {
+            return // Ô mới vẫn trong khung nhìn → giữ nguyên, không cuộn.
+        }
+        topVisibleRow = top
+        let scroll = { proxy.scrollTo(Self.rowScrollID(top), anchor: .top) }
+        if animated {
+            withAnimation(.easeOut(duration: 0.12)) { scroll() }
+        } else {
+            scroll()
         }
     }
 

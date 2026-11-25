@@ -585,7 +585,7 @@ public class ThermalManager: ObservableObject {
         guard showMenuBarMetrics else { return nil }
         let temp = Int(displayTemp.rounded())
         guard temp > 0 else { return nil }
-        return "\(temp)°C"
+        return (temp < 10 ? "\u{2007}" : "") + "\(min(temp, 199))°C"
     }
 
     public func updateMenuBarDisplay() {
